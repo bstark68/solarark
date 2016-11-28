@@ -1,0 +1,271 @@
+
+// ----------------------- Motor Driving Code --------------------------
+//  
+// -------------------------- SolarArk 2016 ----------------------------
+//
+#include "EEPROM.h"
+
+volatile float Diff_azim = 50;   // Degrees
+volatile float Diff_elev = 45;   // Degrees
+int DutyCycleA = 0;              // PWM for Azimuth
+int DutyCycleE = 0;              // PWM for Elevation
+int diff_azim;                   // 'Smooth' Delta Azimuth
+int diff_elev;                   // 'Smooth' Delta Elevation
+
+const int motor_pin = 5;  // Azimuth Motor PWM Pin 5
+const int motor_dir = 4;  // Azimuth Motor Direction Pin 4
+int direction_m = 0;      // CW or CCW
+
+const int actuator_pin = 3; // Elevation Actuator PWM Pin 3
+const int actuator_dir = 2; // Elevation Actuator Direction Pin 2
+int direction_a = 0;        // CW or CCW
+
+int proportional = 10;      // For PID Control
+int integral = 0.1;
+
+const int numReadings = 5;
+ 
+int readingsA[numReadings];      // the readings to smooth
+int readIndexA = 0;              // the index of the current reading
+int totalA = 0;                  // the running total
+
+int readingsE[numReadings];      // the readings to smooth
+int readIndexE = 0;              // the index of the current reading
+int totalE = 0;                  // the running total
+
+void setup()
+{
+// initialize interrupts IE attachInterrupt(0,ISR,CHANGE)
+
+// ---- Set Pin Modes -----
+pinMode(motor_pin,OUTPUT);
+pinMode(motor_dir,OUTPUT);
+pinMode(actuator_pin,OUTPUT);
+pinMode(actuator_dir,OUTPUT);
+
+Serial.begin(9600);
+
+// initialize all Smoothing readings to 0:
+  for (int thisReading = 0; thisReading < numReadings; thisReading++) {
+    readingsA[thisReading] = 0;
+}
+  for (int thisReading = 0; thisReading < numReadings; thisReading++) {
+    readingsE[thisReading] = 0;
+}
+
+}
+
+
+
+
+void loop(){
+// Read from Accelerometer
+int curr_azim;
+int des_azim = 45;
+int rawZ = analogRead(A15);
+//Serial.print("Z:");
+//Serial.println(rawZ);
+
+// Calibration Curve: Deg = -1.2672*V+519.72
+ curr_azim = -1.2672*rawZ+519.72;
+ Diff_azim = des_azim - curr_azim;
+
+//Serial.print("Scaled Z:");
+//Serial.println(Diff_azim);
+//delay(2000);
+
+
+diff_azim = SmoothA(Diff_azim);   // Updates diff_azim - Implements smoothing funciton
+diff_elev = SmoothE(Diff_elev);   // Updates diff_elev - Implements smoothing function
+
+
+if (diff_elev !=0 || diff_azim != 0){
+  drive();
+}
+else{
+  stop();
+}
+
+//------ Fake Feedback Loop----------
+Diff_azim = Diff_azim - 1;
+if(Diff_azim <=0)
+{
+  Diff_azim = 0;
+}
+//Serial.print(des_azim);
+//Serial.print(' ');
+//Serial.print(curr_azim);
+//Serial.print(' ');
+//Serial.println(diff_azim);
+//delay(100);
+// ----------------------------------
+
+}
+
+
+
+void drive(){                // Drives Elevation and Azimuth
+
+DutyCycleA = PID(diff_azim);  // Call PID function; Return value between 0-255 for PWM
+DutyCycleE = PID(diff_elev);
+
+// Test which direction to rotate - Azimuth
+if (diff_azim > 0){
+  direction_m = 0;
+}
+else {
+  direction_m = 1;
+}
+
+// Drive Azimuth
+if (diff_azim != 0){
+digitalWrite(motor_dir, direction_m); //Write azimuth motor direction to pin
+analogWrite(motor_pin, DutyCycleA);  //Write PWM signal to motor pin
+}
+
+// Test which direction to Elevate
+if (diff_elev > 0){
+  direction_a = 0;
+}
+else {
+  direction_a = 1;
+}
+
+// Drive Elevation
+if (diff_elev !=0){
+digitalWrite(actuator_dir, direction_a);
+analogWrite(actuator_pin, DutyCycleE);
+}
+}
+
+
+
+
+void stop(){                          //Stops Both Motors
+DutyCycleA = 0;
+DutyCycleE = 0;
+analogWrite(motor_pin, DutyCycleA);    // Turn azimuth motor off
+analogWrite(actuator_pin, DutyCycleE); //Turn elevation actuator off
+}
+
+
+
+
+int PID (int error){
+  //if (abs(error) < 10){               // Prevent integral 'windup'
+  //  integral = integral + error;      // threshold value 10 found experimentally
+  //}
+  //else{
+  //  integral = 0;                     // Set to zero if out of bounds
+  //}
+  int  DutyCycle = abs(error*proportional);
+  //DutyCycle += abs(error*integral);
+  if (DutyCycle >= 255){
+    DutyCycle = 255;
+  }
+  return DutyCycle;
+}
+
+
+
+int SmoothA(double variableA){     //Smoothing function for Azimuth
+  // subtract the last reading:
+  totalA = totalA - readingsA[readIndexA];
+  // read from the sensor:
+  readingsA[readIndexA] = variableA;
+  // add the reading to the total:
+  totalA = totalA + readingsA[readIndexA];
+  // advance to the next position in the array:
+  readIndexA = readIndexA + 1;
+ 
+  // if we're at the end of the array...
+  if (readIndexA >= numReadings) {
+    // ...wrap around to the beginning:
+    readIndexA = 0;
+  }
+ 
+  // calculate the average:
+  int average = totalA / numReadings;
+  return average;
+}
+
+int SmoothE(double variableE){     //Smoothing function for elevation
+  // subtract the last reading:
+  totalE = totalE - readingsE[readIndexE];
+  // read from the sensor:
+  readingsE[readIndexE] = variableE;
+  // add the reading to the total:
+  totalE = totalE + readingsE[readIndexE];
+  // advance to the next position in the array:
+  readIndexE = readIndexE + 1;
+ 
+  // if we're at the end of the array...
+  if (readIndexE >= numReadings) {
+    // ...wrap around to the beginning:
+    readIndexE = 0;
+  }
+ 
+  // calculate the average:
+  int average = totalE / numReadings;
+  return average;
+}
+
+
+
+
+// ----------- Future Functions -----------------------------------------
+
+void stow(){
+// diff_azim & diff_elev set where 'desired' = 'home'
+// normal driving functions called 
+// drive linear actuators beyond zero to ensure full stow
+    // internal limit switches will prevent driver damage
+}
+
+void StoreVar( int a,int b){
+  // EEPROM.write(a,b) // Write 'b' to location 'a' in EEPROM memory
+}
+
+void GetVar(int a){
+  // EEPROM.read(a) // Read data at location 'a' in EEPROM memory
+}
+
+void manual(int motor, int dir, int DutyCycle){
+  // Write DutyCycle in given direction until button press stops
+  // Inputs will be which motor, direction, DutyCycle (on or off)
+  // Change notification will provide those three values and call this function
+  // based on which button was pressed and if it was HIGH or LOW
+  //
+  // motor: azimuth = 0; elevation = 1;
+  // dir: 0 or 1
+  // DutyCycle: 0 or 255 based on HIGH or LOW
+  //
+  
+  int pin;
+  int pind;
+
+  switch (motor){
+   case 0:
+    pin = motor_pin;
+    pind = motor_dir;
+    break;
+   case 1:
+    pin = actuator_pin;
+    pind = actuator_dir;
+    break;
+  }
+
+  digitalWrite(pind, dir);
+  analogWrite(pin, DutyCycle); 
+}
+
+// ----------------------------------------------------------------------
+
+
+
+
+
+// Running Averages?
+// Change Notifications for button presses / Wind Speed Alerts?
+// Time-out values when driving motors (going for too long=problem)
+
